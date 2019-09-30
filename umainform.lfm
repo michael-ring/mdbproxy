@@ -1,0 +1,106 @@
+object Form1: TForm1
+  Left = 819
+  Height = 665
+  Top = 280
+  Width = 908
+  Caption = 'MDBProxy'
+  ClientHeight = 665
+  ClientWidth = 908
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  Position = poDefaultPosOnly
+  LCLVersion = '2.1.0.0'
+  object Panel1: TPanel
+    Left = 0
+    Height = 88
+    Top = 0
+    Width = 908
+    Align = alTop
+    Caption = 'Panel1'
+    ClientHeight = 88
+    ClientWidth = 908
+    TabOrder = 0
+    object ButtonConnect: TButton
+      Left = 824
+      Height = 25
+      Top = 4
+      Width = 75
+      Anchors = [akTop, akRight]
+      Caption = 'Connect'
+      OnClick = ButtonConnectClick
+      TabOrder = 0
+    end
+    object ComboBox1: TComboBox
+      Left = 80
+      Height = 20
+      Top = 8
+      Width = 328
+      AutoComplete = True
+      AutoCompleteText = [cbactEnabled, cbactEndOfLineComplete, cbactSearchAscending]
+      AutoDropDown = True
+      ItemHeight = 19
+      OnChange = ComboBox1Change
+      TabOrder = 1
+      Text = 'ComboBox1'
+    end
+    object ComboBox2: TComboBox
+      Left = 80
+      Height = 20
+      Top = 32
+      Width = 328
+      ItemHeight = 19
+      TabOrder = 2
+      Text = 'ComboBox2'
+    end
+    object ComboBox3: TComboBox
+      Left = 80
+      Height = 20
+      Top = 56
+      Width = 80
+      ItemHeight = 19
+      TabOrder = 3
+      Text = 'ComboBox3'
+    end
+    object Label1: TLabel
+      Left = 8
+      Height = 16
+      Top = 10
+      Width = 64
+      Alignment = taRightJustify
+      Caption = 'Debugger:'
+      ParentColor = False
+    end
+    object Label2: TLabel
+      Left = 40
+      Height = 16
+      Top = 34
+      Width = 32
+      Alignment = taRightJustify
+      Caption = 'Chip:'
+      ParentColor = False
+    end
+  end
+  object Memo1: TMemo
+    Left = 0
+    Height = 577
+    Top = 88
+    Width = 908
+    Align = alClient
+    Font.Name = 'Courier New'
+    Font.Pitch = fpFixed
+    Lines.Strings = (
+      'Memo1'
+    )
+    ParentFont = False
+    TabOrder = 1
+  end
+  object Label3: TLabel
+    Left = 14
+    Height = 16
+    Top = 58
+    Width = 58
+    Alignment = taRightJustify
+    Caption = 'Interface:'
+    ParentColor = False
+  end
+end
