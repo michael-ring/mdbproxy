@@ -32,7 +32,7 @@ type
     FMPLabXDir : String;
     FConfigFile : String;
     FTCPPort : word;
-    FRSPServer : TGdbRspServer;
+    FNetworkThread : TMdbgNetworkThread;
     procedure WriteIni(Section,Key,Value : String);
     function ReadIni(Section,Key,DefaultValue : String):String;
   public
@@ -256,8 +256,11 @@ begin
     FMdbgProxy.Quit;
     FreeAndNil(FMDbgProxy);
   end;
-  if Assigned(FRspServer) then
-    FreeAndNil(FRspServer);
+  if Assigned(FNetworkThread) then
+  begin
+    FNetworkThread.Terminate;
+    FreeAndNil(FNetworkThread);
+  end;
 end;
 
 procedure TForm1.ButtonConnectClick(Sender: TObject);
@@ -311,13 +314,20 @@ begin
     ComboBox1.Enabled := false;
     ComboBox2.Enabled := false;
     ComboBox3.Enabled := false;
-    FRspServer := TGdbRspServer.Create(FTcpPort);
-    if FRspServer.MaxConnections <> 0 then
-    begin
-      Memo1.Lines.Add('GDBServer waiting for TCP connection on port ' + IntToStr(FRspServer.Port));
-      FRspServer.SetNonBlocking;
-      FRspServer.StartAccepting;
-    end;
+    Memo1.Lines.Add('GDBServer waiting for TCP connection on port ' + IntToStr(FTcpPort));
+    FNetworkThread := TMdbgNetworkThread.Create(FTcpPort);
+    FNetworkThread.Start;
+    Memo1.Lines.Add('After FNetwork Thread execute');
+
+
+    //FRspServer := TGdbRspServer.Create(FTcpPort);
+    //if FRspServer.MaxConnections <> 0 then
+    //begin
+    //  Memo1.Lines.Add('GDBServer waiting for TCP connection on port ' + IntToStr(FRspServer.Port));
+      //FRspServer.SetNonBlocking;
+    //  FRspServer.SetNonBlocking;
+    //  FRspServer.StartAccepting;
+    //end;
   end
   else
   begin

@@ -6,22 +6,21 @@ interface
 
 uses
   {$ifdef unix}cthreads,{$endif}
-  Classes, SysUtils, Forms, Process;
+  Classes, SysUtils, Forms, Process,rsp;
 
 type
   TLoggerProc = procedure(const LogText: string);
 
-//type
-  //TMdbgThread = class(TThread)
-  //private
-    //FMdbServerProcess: TProcess;
-    //FMdbgPath: string;
-  //public
-    //constructor Create(const MdbgPath: string);
-    //procedure Execute; override;
-    //property MdbServerProcess: TProcess read FMdbServerProcess;
-    //destructor Destroy; override;
-  //end;
+type
+  TMdbgNetworkThread = class(TThread)
+  private
+    FServerPort : word;
+    FRspServer : TGdbRspServer;
+  public
+    constructor Create(const ServerPort : word);
+    procedure Execute; override;
+    destructor Destroy; override;
+  end;
 
 type
   TMdbgProxy = class
@@ -51,30 +50,31 @@ implementation
 uses
   DbugIntf;
 
-(*
-constructor TMdbgThread.Create(const MdbgPath: string);
+constructor TMdbgNetworkThread.Create(const ServerPort : word);
 begin
   inherited Create(False);
-  SendDebug('MDB Thread Created');
-  FMdbgPath := MdbgPath;
+  FServerPort := ServerPort;
   FreeOnTerminate := True;
+  SendDebug('MDB Network Thread Created');
 end;
 
-procedure TMdbgThread.Execute;
+procedure TMdbgNetworkThread.Execute;
 begin
-  FMdbServerProcess := TProcess.Create(nil);
-  FMdbServerProcess.Options := [poUsePipes,poStderrToOutput];
-  FMdbServerProcess.Executable := FMdbgPath;
-  FMdbServerProcess.CurrentDirectory:=ExtractFileDir(FMdbgPath);
-  FMdbServerProcess.Execute;
+  SendDebug('MDB Network Thread Executing');
+  FRspServer := TGdbRspServer.Create(FServerPort);
+  if FRspServer.MaxConnections <> 0 then
+  begin
+    SendDebug('MDB Network Thread before StartAccepting');
+    FRspServer.StartAccepting;
+    SendDebug('MDB Network Thread after StartAccepting');
+  end
 end;
 
-destructor TMdbgThread.Destroy;
+destructor TMdbgNetworkThread.Destroy;
 begin
   inherited Destroy;
-  SendDebug('MDB Thread Destroyed');
+  SendDebug('MDB Network Thread Destroyed');
 end;
-*)
 
 constructor TMdbgProxy.Create(const MdbgPath: string);
 begin
@@ -258,6 +258,8 @@ begin
     Sleep(100);
   end;
   Log('MDB Process Terminated');
+  FMdbServerProcess.Terminate(0);
+  FreeAndNil(FMdbServerProcess);
 end;
 
 function TMdbgProxy.SetHWTool(HWToolName : String ; Timeout: integer = 1000): TStringArray;
