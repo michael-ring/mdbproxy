@@ -6,23 +6,12 @@ interface
 
 uses
   {$ifdef unix}cthreads,{$endif}
-  Classes, SysUtils, Forms, Process,rsp;
+  Classes, SysUtils, Forms, Process;
 
 type
   TLoggerProc = procedure(const LogText: string);
 
-type
-  TMdbgNetworkThread = class(TThread)
-  private
-    FServerPort : word;
-    FRspServer : TGdbRspServer;
-  public
-    constructor Create(const ServerPort : word);
-    procedure Execute; override;
-    destructor Destroy; override;
-  end;
-
-type
+ type
   TMdbgProxy = class
   private
     //FMdbgThread: TMdbgThread;
@@ -33,16 +22,31 @@ type
     procedure Log(const LogText: string);
     function SendCommand(Command: string; Timeout: integer = 1000): TStringArray;
     function WaitForPrompt(Timeout: integer = 1000): TStringArray;
+    function WaitForBreak(out BreakAddress : longWord; Timeout: integer = 1000) : boolean;
     procedure StartProcess(Timeout: integer = 1000);
     function GetHwtoolInfo(Timeout: integer = 1000): TStringArray;
     function GetValidDevices(const DeviceFile : String): TStringArray;
     function SetDevice(DeviceName : String ; Timeout: integer = 1000): TStringArray;
     procedure SetInterface(InterfaceName : String ; Timeout: integer = 1000);
+    procedure EnableSoftBreakpoints(Timeout: integer = 1000);
     function SetHWTool(HWToolName : String ; Timeout: integer = 1000): TStringArray;
     function ResetCPU(Timeout: integer = 1000): TStringArray;
     function Quit(Timeout: integer = 1000): boolean;
-    function GetPC(Timeout: integer = 1000): String;
-    function GetPrintResult(Parameter : String;Timeout: integer = 1000): String;
+
+    function ReadByte(const addr : longWord; out Value : byte; Timeout: integer = 1000): boolean;
+    function ReadWord(const addr : longWord; out Value : word; Timeout: integer = 1000): boolean;
+    function ReadLongWord(const addr : longWord; out Value : LongWord; Timeout: integer = 1000): boolean;
+
+    function WriteByte(const addr : longWord; const Value : byte; Timeout: integer = 1000): boolean;
+    function WriteWord(const addr : longWord; const Value : word; Timeout: integer = 1000): boolean;
+    function WriteLongWord(const addr : longWord; const Value : longWord; Timeout: integer = 1000): boolean;
+
+    function ReadPC(out Value : TBytes; Timeout: integer = 1000): boolean;
+    function ReadPC(out Value : word; Timeout: integer = 1000): boolean;
+    function WritePC(const Value : TBytes; Timeout: integer = 1000): boolean;
+    function WritePC(const Value : word; Timeout: integer = 1000): boolean;
+    function ReadMemory(const addr : longWord; const Len : LongWord; out Values : TBytes; Timeout: integer = 1000): boolean;
+    function WriteMemory(const addr : longWord; const Len : LongWord; const Values : TBytes; Timeout: integer = 1000): boolean;
   end;
 
 implementation
@@ -50,31 +54,6 @@ implementation
 uses
   DbugIntf;
 
-constructor TMdbgNetworkThread.Create(const ServerPort : word);
-begin
-  inherited Create(False);
-  FServerPort := ServerPort;
-  FreeOnTerminate := True;
-  SendDebug('MDB Network Thread Created');
-end;
-
-procedure TMdbgNetworkThread.Execute;
-begin
-  SendDebug('MDB Network Thread Executing');
-  FRspServer := TGdbRspServer.Create(FServerPort);
-  if FRspServer.MaxConnections <> 0 then
-  begin
-    SendDebug('MDB Network Thread before StartAccepting');
-    FRspServer.StartAccepting;
-    SendDebug('MDB Network Thread after StartAccepting');
-  end
-end;
-
-destructor TMdbgNetworkThread.Destroy;
-begin
-  inherited Destroy;
-  SendDebug('MDB Network Thread Destroyed');
-end;
 
 constructor TMdbgProxy.Create(const MdbgPath: string);
 begin
@@ -96,7 +75,7 @@ begin
   Result := nil;
   Line := '';
   repeat
-    Application.ProcessMessages;
+    //Application.ProcessMessages;
     Sleep(100);
     TimeOut := Timeout - 100;
 
@@ -132,6 +111,18 @@ begin
     Log('WaitForPrompt timeout');
 end;
 
+function TMdbgProxy.WaitForBreak(out BreakAddress : longWord; Timeout: integer = 1000):boolean;
+var
+  Lines : TStringArray;
+begin
+  Lines := WaitForPrompt(Timeout);
+  if length(lines) > 0 then
+  begin
+    if Lines[0].Contains('Stop at') then
+      BreakAddress := Lines[1].Replace('address:0x','$').toInteger;
+  end;
+end;
+
 function TMdbgProxy.SendCommand(Command: string;
   Timeout: integer = 1000): TStringArray;
 var
@@ -145,7 +136,10 @@ begin
   begin
     for i := 1 to length(Command) do
       FMdbServerProcess.Input.Write(Command[i], 1);
-    Result := WaitforPrompt(Timeout);
+    if Timeout = -1 then
+      Result := nil
+    else
+      Result := WaitforPrompt(Timeout);
   end;
 end;
 
@@ -241,6 +235,11 @@ begin
   SendCommand('set communication.interface '+InterfaceName,Timeout);
 end;
 
+procedure TMdbgProxy.EnableSoftBreakpoints(Timeout: integer = 1000);
+begin
+  SendCommand('set debugoptions.useswbreakpoints true',Timeout);
+end;
+
 function TMdbgProxy.ResetCPU(Timeout: integer = 1000): TStringArray;
 begin
   Result := SendCommand('reset',Timeout);
@@ -305,7 +304,7 @@ begin
   end;
 end;
 
-function TMdbgProxy.GetPrintResult(Parameter : String;Timeout: integer = 1000): String;
+(*function TMdbgProxy.GetPrintResult(Parameter : String;Timeout: integer = 1000): String;
 var
   Lines : TStringArray;
   _char : char;
@@ -325,26 +324,189 @@ begin
     end;
   end;
 end;
+*)
 
-function TMdbgProxy.GetPC(Timeout: integer = 1000): String;
+function TMdbgProxy.ReadByte(const Addr : longWord; out Value : Byte; Timeout: integer = 1000): boolean;
+var
+  Tmp : TBytes;
+begin
+  setLength(tmp,1);
+  Result := ReadMemory(Addr,1,Tmp,Timeout);
+  Value := tmp[0];
+end;
+
+function TMdbgProxy.ReadWord(const Addr : longWord; out Value : Word; Timeout: integer = 1000): boolean;
+var
+  Tmp : TBytes;
+begin
+  setLength(tmp,2);
+  Result := ReadMemory(Addr,2,Tmp,Timeout);
+  Value := tmp[0]+tmp[1] shl 8;
+end;
+
+function TMdbgProxy.ReadLongWord(const Addr : longWord; out Value : LongWord; Timeout: integer = 1000): boolean;
+var
+  Tmp : TBytes;
+begin
+  setLength(tmp,4);
+  Result := ReadMemory(Addr,1,Tmp,Timeout);
+  Value := tmp[0]+tmp[1] shl 8++tmp[2] shl 16+tmp[3] shl 24;
+end;
+
+function TMdbgProxy.WriteByte(const Addr : longWord; const Value : Byte; Timeout: integer = 1000): boolean;
+begin
+  Result := WriteMemory(Addr,4,[Value]);
+end;
+
+function TMdbgProxy.WriteWord(const Addr : longWord; const Value : Word; Timeout: integer = 1000): boolean;
+begin
+  Result := WriteMemory(Addr,1,[Value and $ff,Value shr 8]);
+end;
+
+function TMdbgProxy.WriteLongWord(const Addr : longWord; const Value : LongWord; Timeout: integer = 1000): boolean;
+begin
+  Result := WriteMemory(Addr,1,[Value and $ff,(Value shr 8) and $ff,(Value shr 16) and $ff,(Value shr 24) and $ff]);
+end;
+
+function TMdbgProxy.ReadPC(out Value : TBytes; Timeout: integer = 1000): boolean;
+var
+  Lines : TStringArray;
+  tmp : word;
+  tmp2 : string;
+  _char : char;
+begin
+  Lines := SendCommand('print PC');
+  if (length(lines) = 1) then
+  begin
+    setLength(Value,2);
+    tmp2 := lines[0].subString(3,999);
+    tmp := lines[0].subString(3,999).toInteger;
+    Value[0] := tmp and $ff;
+    Value[1] := tmp shr 8;
+    Result := true;
+  end
+  else
+    Result := false;
+end;
+
+function TMdbgProxy.ReadPC(out Value : Word; Timeout: integer = 1000): boolean;
+var
+  Lines : TStringArray;
+  tmp : string;
+  _char : char;
+begin
+  Lines := SendCommand('print PC');
+  if (length(lines) = 1) then
+  begin
+    tmp := lines[0].subString(3,999);
+    Value := lines[0].subString(3,999).toInteger;
+    Result := true;
+  end
+  else
+    Result := false;
+end;
+
+function TMdbgProxy.WritePC(const Value : TBytes; Timeout: integer = 1000): boolean;
 var
   Lines : TStringArray;
   _char : char;
 begin
-  Result := 'null';
-  Lines := SendCommand('print PC',Timeout);
-  if (length(Lines)=1) and Lines[0].contains('=') then
+  Lines := SendCommand('x /fx PC=');
+  if (length(lines) >= 1) then
   begin
-    Result := Lines[0].SubString(Lines[0].IndexOf('=')+1).trim;
-    for _char in Result do
+
+  end
+  else
+    Exit(false);
+end;
+
+function TMdbgProxy.WritePC(const Value : word; Timeout: integer = 1000): boolean;
+var
+  Lines : TStringArray;
+  _char : char;
+begin
+  Lines := SendCommand('x /fx PC='+Value.tostring);
+  if (length(lines) >= 1) then
+  begin
+
+  end
+  else
+    Exit(false);
+end;
+
+function TMdbgProxy.ReadMemory(const Addr : longWord; const Len : longWord; out Values : TBytes; Timeout: integer = 1000): boolean;
+var
+  i,j : integer;
+  Lines : TStringArray;
+  _char : char;
+  tmp : string;
+begin
+  if Addr < $800000 then
+    Lines := SendCommand('x /tpubfxn'+Len.ToString+' '+(Addr and $ffff).toString)
+  else if Addr < $810000 then
+    Lines := SendCommand('x /trubfxn'+Len.ToString+' '+(Addr and $ffff).toString)
+  else if Addr >=$810000 then
+    Lines := SendCommand('x /teubfxn'+Len.ToString+' '+(Addr and $ffff).toString)
+  else
+    setLength(Lines,0);
+
+  setLength(Values,len);
+  for i := 0 to length(lines)-1 do
+  begin
+    for j := 0 to (length(lines[i]) div 5)-1 do
     begin
-      if (_char <'0') or (_char>'9') then
-      begin
-        Result := 'null';
-        break;
-      end;
+      tmp := lines[i].Substring(j*5,2);
+      Values[i*16+j] := ('$'+lines[i].Substring(j*5,2)).ToInteger;
     end;
+    j := 0;
+  end
+end;
+
+function TMdbgProxy.WriteMemory(const addr : longWord; const Len : LongWord; const Values : TBytes; Timeout: integer = 1000): boolean;
+var
+  Lines : TStringArray;
+  _char : char;
+  convertcount : LongWord;
+  tmpline : string;
+begin
+  try
+    ConvertCount := 0;
+    tmpline := '';
+    if Addr < $800000 then
+    begin
+      // Flash writes are always LongWord aligned.....
+      while ConvertCount < len do
+      begin
+        if ConvertCount mod 4 = 0 then
+          tmpline := tmpLine + '0x';
+        tmpline := tmpline+Values[ConvertCount].ToHexString(2);
+        inc(ConvertCount);
+        if ConvertCount mod 4 = 0 then
+          tmpLine := tmpLine + ' ';
+        if ConvertCount mod 256 = 0 then
+        begin
+          Lines := SendCommand('write /tp '+((Addr-256+ConvertCount) and $ffff).toString+' '+tmpLine);
+          tmpLine := '';
+        end;
+      end;
+      if tmpLine <> '' then
+      begin
+        Lines := SendCommand('write /tp '+((Addr+256-ConvertCount) and $ffff).toString+' '+tmpLine);
+      end;
+    end
+    else if Addr < $810000 then
+    begin
+      Lines := SendCommand('write /tr '+Addr.toString+' ')
+    end
+    else if Addr >=81000 then
+    begin
+      Lines := SendCommand('write /te'+Addr.toString+' ')
+    end
+    else
+      SetLength(Lines,0);
+  except
   end;
+
 end;
 
 end.

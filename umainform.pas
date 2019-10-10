@@ -32,7 +32,8 @@ type
     FMPLabXDir : String;
     FConfigFile : String;
     FTCPPort : word;
-    FNetworkThread : TMdbgNetworkThread;
+    //FNetworkThread : TMdbgNetworkThread;
+    FNetworkThread : TGdbRspServer;
     procedure WriteIni(Section,Key,Value : String);
     function ReadIni(Section,Key,DefaultValue : String):String;
   public
@@ -258,7 +259,8 @@ begin
   end;
   if Assigned(FNetworkThread) then
   begin
-    FNetworkThread.Terminate;
+    FNetworkThread.StopAccepting(True);
+    //FNetworkThread.Terminate;
     FreeAndNil(FNetworkThread);
   end;
 end;
@@ -268,6 +270,7 @@ var
   SerialNo,Debugger,Chip,_Interface : String;
   ReturnedText : TStringArray;
   line : String;
+  pc : word;
 begin
   Debugger := ComboBox1.Caption;
   SerialNo := ComboBox1.Caption;
@@ -286,6 +289,9 @@ begin
     Memo1.Lines.Add('Setting Interface: '+_interface);
     FMdbgProxy.setInterface(_Interface);
   end;
+
+  Memo1.Lines.Add('Enabling Software Breakpoints');
+  FMdbgProxy.enableSoftBreakpoints;
 
   Memo1.Lines.Add('Activating Debugger: '+Debugger);
   ReturnedText := FMdbgProxy.setHWTool(Debugger,10000);
@@ -306,7 +312,7 @@ begin
   for line in ReturnedText do
     Memo1.Lines.Add(line);
 
-  if FMdbgProxy.GetPC <> 'null' then
+  if FMdbgProxy.ReadPC(pc) = true then
   begin
     WriteIni(SerialNo,'Chip',Chip);
     if ComboBox3.Enabled = true then
@@ -315,8 +321,9 @@ begin
     ComboBox2.Enabled := false;
     ComboBox3.Enabled := false;
     Memo1.Lines.Add('GDBServer waiting for TCP connection on port ' + IntToStr(FTcpPort));
-    FNetworkThread := TMdbgNetworkThread.Create(FTcpPort);
-    FNetworkThread.Start;
+    FNetworkThread := TGDBRspServer.Create(FTcpPort,FMDBGProxy);
+    FNetworkThread.SetNonBlocking;
+    FNetworkThread.StartAccepting;
     Memo1.Lines.Add('After FNetwork Thread execute');
 
 
@@ -328,10 +335,10 @@ begin
     //  FRspServer.SetNonBlocking;
     //  FRspServer.StartAccepting;
     //end;
-  end
-  else
-  begin
-    Memo1.Lines.Add('ERROR: Could not put Device into Debug mode, please fix settings and retry');
+  //end
+  //else
+  //begin
+  //  Memo1.Lines.Add('ERROR: Could not put Device into Debug mode, please fix settings and retry');
   end;
 end;
 

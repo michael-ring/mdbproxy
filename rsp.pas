@@ -4,12 +4,9 @@ interface
 
 uses
   {$ifdef unix}cthreads,{$endif}
-  Classes, SysUtils, ssockets;
+  Classes, SysUtils, ssockets,UMDBGProxy;
 
-type
-
-  {$DEFINE memorymap}
-
+  type
   {TGdbRspThread }
   TDebugState = (dsPaused, dsRunning);
   TDebugStopReason = (srCtrlC, srHWBP, srSWBP);
@@ -28,7 +25,7 @@ type
     //FBPManager: TBPManager;
     FLastCmd: string;  // in case a resend is required;
     FFlashWriteBuffer: array of TFlashWriteBuffer;
-    FMemoryMap: string;
+    FMDBGProxy : TMDBGProxy;
 
     function gdb_fieldSepPos(cmd: string): integer;
     procedure gdb_response(s: string);
@@ -47,17 +44,11 @@ type
     procedure DebugGetMemory(cmd: string);
     procedure DebugSetMemoryHex(cmd: string);
     procedure DebugSetMemoryBinary(cmd: string);
-    {$IFDEF memorymap}
-    procedure DebugMemoryMap(cmd: string);
+    procedure DebugStopReason(signal: integer; stopReason: TDebugStopReason);
     procedure DecodeBinary(const s: string; out data: TBytes);
     procedure EncodeBinary(const data: TBytes; out s: string);
-    procedure DebugFlashErase(cmd: string);
-    procedure DebugFlashWrite(cmd: string);
-    procedure DebugFlashWriteDone;
-    {$ENDIF memorymap}
-    procedure DebugStopReason(signal: integer; stopReason: TDebugStopReason);
   public
-    constructor Create(AClientStream: TSocketStream);
+    constructor Create(AClientStream: TSocketStream; var aMDBGProxy : TMDBGProxy);
     procedure Execute; override;
     //property OnLog: TLog read FLogger write FLogger;
   end;
@@ -68,16 +59,26 @@ type
   private
     FActiveThread: TGdbRspThread;
     FActiveThreadRunning: boolean;
-    //FDebugWire: TDebugWire;
-    //FSerialPort: string;
-    //FBaud: integer;
+    FMDBGProxy : TMDBGProxy;
 
     procedure FActiveThreadOnTerminate(Sender: TObject);
     procedure FAcceptConnection(Sender: TObject; Data: TSocketStream);
     procedure FQueryConnect(Sender: TObject; ASocket: LongInt; var doaccept: Boolean);
   public
-    constructor Create(APort: Word);
+    constructor Create(APort: Word;var aMDBGProxy : TMDBGProxy);
   end;
+
+  (*
+  TMdbgNetworkThread = class(TThread)
+  private
+    FServerPort : word;
+    FRspServer : TGdbRspServer;
+  public
+    constructor Create(const ServerPort : word);
+    procedure Execute; override;
+    destructor Destroy; override;
+  end;
+  *)
 
 implementation
 
@@ -128,6 +129,7 @@ begin
     result := semicolonPos;
 end;
 
+
 procedure TGdbRspThread.gdb_response(s: string);
 var
   checksum, i: integer;
@@ -160,12 +162,10 @@ end;
 procedure TGdbRspThread.gdb_qSupported(cmd: string);
 begin
   if pos('Supported', cmd) > 0 then
-    gdb_response('PacketSize=4000;qXfer:memory-map:read-;swbreak+;hwbreak+;')
-      // For flash writes transfer at least a flash page full of data
+    gdb_response('PacketSize=216;qXfer:memory-map:read-;swbreak+;hwbreak+;')
+      // A packetsize of 216 results in flash memory write commands that are 512 Bytes
       // to prevent potential repeated erasing of the same flash page
       // due to data transfer fragementation
-      // + 'PacketSize=' + IntToStr(FDebugWire.Device.FlashPageSize) + ';'
-    //{$IFDEF memorymap} + 'qXfer:memory-map:read+' {$ENDIF memorymap})
   else if pos('Offsets', cmd) > 0 then
     gdb_response('Text=0;Data=0;Bss=0')
   else if pos('Symbol', cmd) > 0 then
@@ -201,9 +201,9 @@ end;
 
 procedure TGdbRspThread.DebugContinue;
 begin
-  //FLog('PC = ' + hexStr(FDebugWire.PC, 4));
   FDebugState := dsRunning;
-  //FDebugWire.Run;
+  // Do not wait for Command Results when calling Continue, we will wait for a hit breakpoint in the main loop
+  FMDBGProxy.SendCommand('Continue',-1);
 end;
 
 procedure TGdbRspThread.DebugStep;
@@ -211,111 +211,85 @@ var
   instruction, oldPC: word;
 //  ActiveBPRecord: PBP;
 begin
-(*
-  oldPC := FDebugWire.PC;
-  ActiveBPRecord := FBPManager.findSWBPFromAddress(oldPC);
-  if ActiveBPRecord <> nil then
-  begin
-    if length(ActiveBPRecord^.origCode) = 2 then
-    begin
-      instruction := ActiveBPRecord^.origCode[0] + (ActiveBPRecord^.origCode[1] shl 8);
-      FDebugWire.SendInstruction16(instruction);
-      FDebugWire.PC := oldPC + 2;
-    end
-    else
-      FLog('Unexpected instruction code length');
-  end
-  else
-    FDebugWire.Step;
-*)
+  // Do not wait for Command Results when calling Continue, we will wait for a hit breakpoint in the main loop
+  FDebugState := dsRunning;
+  FMDBGProxy.SendCommand('Step',-1);
 end;
 
 procedure TGdbRspThread.DebugGetRegisters;
 var
-  //data: TBytes;
-  resp: string;
+  data: TBytes;
+  s : string;
   i: integer;
 begin
-  resp := '';
-  for i := 0 to 31 do
-  begin
-    //GetPrintResult('r'+i.toString)
-    Resp := Resp+'00';
+  try
+    s := '';
+    setLength(Data,32);
+    FMDBGProxy.ReadMemory($800000+0,32,data);
+    for i := 0 to 31 do
+      s := s + data[i].ToHexString(2);
+
+    // SREG
+    FMDBGProxy.ReadMemory($800000+$5F,1,data);
+    s := s + data[0].ToHexString(2);
+
+    // SP
+    FMDBGProxy.ReadMemory($800000+$5D,2,data);
+    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+
+    // PC
+    FMDBGProxy.ReadPC(data);
+    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+    // PC in GDB is 32 Bit so fill PC to 32Bits
+    s := s+'0000';
+    gdb_response(s.toLower);
+  except
+    gdb_response('E00');
   end;
-  //GetPrintResult('SREG')
-  Resp := Resp+'00';
-  //GetPrintResult('SPH')
-  //GetPrintResult('SPL')
-  Resp := Resp+'ff3f';
-  //GetPrintResult('PC')
-  Resp := Resp+'0000';
-  // ????
-  Resp := Resp+'0000';
-  gdb_response(resp);
-(*
-  FDebugWire.safeReadRegs(0, 32, data);
-  resp := '';
-  for i := 0 to length(data)-1 do
-    resp := resp + hexStr(data[i], 2);
-
-  // Eliminate gdb error when reply starts with E
-  resp := LowerCase(resp);
-
-  // SREG
-  FDebugWire.ReadAddress($5F, 1, data);
-  resp := resp + hexStr(data[0], 2);
-
-  // SPL & SPH
-  FDebugWire.ReadAddress($5D, 2, data);
-  resp := resp + hexStr(data[0], 2) + hexStr(data[1], 2);
-
-  // PC in bytes
-  resp := resp + hexStr(FDebugWire.PC and $FF, 2) + hexStr(FDebugWire.PC shr 8, 2) + '0000';
-  gdb_response(resp);
-*)
 end;
 
 procedure TGdbRspThread.DebugGetRegister(cmd: string);
 var
   regID: integer;
-  data: TBytes;
   s: string;
   i: integer;
+  values : TBytes;
 begin
-(*
-  // cmd still contain full gdb string with p prefix
-  delete(cmd, 1, 1);
-  if Length(cmd) = 2 then // Hex number of a byte value
-  begin
-    regID := StrToInt('$'+cmd);
-    case regID of
-      0..31: begin // normal registers
-               FDebugWire.safeReadRegs(regID, 1, data);
-             end;
-      32: FDebugWire.ReadAddress($5F, 1, data); // SREG
-
-      33: FDebugWire.ReadAddress($5D, 2, data); // SPL, SPH
-
-      34: begin // PC
-            SetLength(data, 4);
-            data[0] := FDebugWire.PC and $FF;
-            data[1] := FDebugWire.PC shr 8;
-            data[2] := 0;
-            data[3] := 0;
-          end;
-    end;
-  end;
-
-  if length(data) > 0 then
-  begin
+  try
     s := '';
-    for i := 0 to high(data) do
-      s := s + hexStr(data[i], 2);
-    gdb_response(s);
-  end
-  else
+    setLength(values,2);
+    // cmd still contain full gdb string with p prefix
+    delete(cmd, 1, 1);
+    if Length(cmd) = 2 then // Hex number of a byte value
+    begin
+      regID := StrToInt('$'+cmd)+$800000;
+      case regID of
+        0..31: begin // normal registers
+                 FMDBGProxy.ReadMemory(regID,1,values);
+                 s := values[0].ToHexString(2);
+               end;
+        32:    begin // SREG
+                 FMDBGProxy.ReadMemory($5F,1,values);
+                 s := values[0].ToHexString(2);
+               end;
+        33: begin
+               FMDBGProxy.ReadMemory($5D,2,values);
+               s := values[0].ToHexString(2)+values[1].ToHexString(2);
+            end;
+
+        34: begin // PC
+               FMDBGProxy.ReadPC(values);
+               s := values[0].ToHexString(2)+values[1].ToHexString(2)+'0000';
+            end;
+      end;
+    end;
+    if s <> '' then
+      gdb_response(s.toLower)
+    else
+      gdb_response('E00');
+  except
     gdb_response('E00');
-*)
+  end;
 end;
 
 procedure TGdbRspThread.DebugSetRegisters(cmd: string);
@@ -324,51 +298,50 @@ var
   l1, len, i: integer;
   s: string;
 begin
-(*
-  // cmd still contain full gdb string with G prefix
-  delete(cmd, 1, 1);
-  len := length(cmd) div 2;  // in byte equivalents
+  try
+    // cmd still contain full gdb string with G prefix
+    delete(cmd, 1, 1);
+    len := length(cmd) div 2;  // in byte equivalents
 
-  // extract normal registers
-  l1 := min(len, 32);
-  SetLength(data, l1);
-  for i := 0 to l1-1 do
-  begin
-    s := '$' + cmd[2*i + 1] + cmd[2*i + 2];
-    data[i] := StrToInt(s);
+    // extract normal registers
+    l1 := min(len, 32);
+    SetLength(data, l1);
+    for i := 0 to l1-1 do
+    begin
+      s := '$' + cmd[2*i + 1] + cmd[2*i + 2];
+      FMDBGProxy.WriteMemory(i+800000,1,[byte(s.ToInteger)]);
+    end;
+
+    // Check for SREG
+    if (len > 32) then
+    begin
+      s := '$' + cmd[65] + cmd[66];
+      SetLength(data, 1);
+      FMDBGProxy.WriteMemory($5F+$80000,1,[byte(s.ToInteger)]);
+    end;
+
+    // Check for SPL/SPH
+    if (len > 34) then
+    begin
+      SetLength(data, 2);
+      s := '$' + cmd[67] + cmd[68];
+      data[0] := StrToInt(s);
+      SetLength(data, 2);
+      s := '$' + cmd[69] + cmd[70];
+      data[1] := StrToInt(s);
+      FMDBGProxy.WriteMemory($5D+$800000,2,data);
+    end;
+
+    // Should be PC
+    if (len = 39) then
+    begin
+      s := '$' + copy(cmd, 71, 8);
+      FMDBGProxy.WritePC(word(s.ToInteger));
+    end;
+    gdb_response('OK');
+  except
+    gdb_response('E00');
   end;
-  FDebugWire.WriteAddress(0, data);
-
-  // Check for SREG
-  if (len > 32) then
-  begin
-    s := '$' + cmd[65] + cmd[66];
-    SetLength(data, 1);
-    data[0] := StrToInt(s);
-    FDebugWire.WriteAddress($5F, data);
-  end;
-
-  // Check for SPL/SPH
-  if (len > 34) then
-  begin
-    SetLength(data, 2);
-    s := '$' + cmd[67] + cmd[68];
-    data[0] := StrToInt(s);
-    SetLength(data, 2);
-    s := '$' + cmd[69] + cmd[70];
-    data[1] := StrToInt(s);
-    FDebugWire.WriteAddress($5D, data);
-  end;
-
-  // Should be PC
-  if (len = 39) then
-  begin
-    s := '$' + copy(cmd, 71, 8);
-    FDebugWire.PC := word(StrToInt(s));
-  end;
-
-  gdb_response('OK');
-*)
 end;
 
 procedure TGdbRspThread.DebugSetRegister(cmd: string);
@@ -377,36 +350,45 @@ var
   data: TBytes;
   sep, val, numbytes, i: integer;
 begin
-(*
-  // cmd still contain full gdb string with P prefix
-  delete(cmd, 1, 1);
-  sep := pos('=', cmd);
-  if sep = 3 then // regID is before '='
-  begin
-    regID := StrToInt('$' + copy(cmd, 1, 2));
-
-    numbytes := (length(cmd) - 3) div 2;
-    SetLength(data, numbytes);
-    for i := 0 to numbytes-1 do
+  try
+    // cmd still contain full gdb string with P prefix
+    delete(cmd, 1, 1);
+    sep := pos('=', cmd);
+    if sep = 3 then // regID is before '='
     begin
-      val := StrToInt('$' + cmd[4 + i*2] + cmd[4 + i*2 + 1]);
-      data[i] := (val shr (8*i)) and $ff;
-    end;
+      regID := StrToInt('$' + copy(cmd, 1, 2));
 
-    case regID of
-      // normal registers
-      0..31: FDebugWire.WriteRegs(regID, data);
-      // SREG
-      32: FDebugWire.WriteAddress($5F, data);
-      // SPL, SPH
-      33: FDebugWire.WriteAddress($5D, data);
-      // PC
-      34: FDebugWire.PC := data[0] + data[1] shl 8;
+      numbytes := (length(cmd) - 3) div 2;
+      SetLength(data, numbytes);
+      for i := 0 to numbytes-1 do
+      begin
+        val := StrToInt('$' + cmd[4 + i*2] + cmd[4 + i*2 + 1]);
+        data[i] := (val shr (8*i)) and $ff;
+      end;
+
+      case regID of
+        // normal registers
+        0..31: begin
+                 FMDBGProxy.WriteMemory(regID+$800000,1,data);
+               end;
+        // SREG
+        32: begin
+              FMDBGProxy.WriteMemory($5F+$800000,1,data);
+            end;
+        // SPL, SPH
+        33: begin
+              FMDBGProxy.WriteMemory($5D+800000,2,data);
+            end;
+        // PC
+        34: begin
+              FMDBGProxy.WritePC(data);
+            end;
+      end;
     end;
+    gdb_response('OK');
+  except
+    gdb_response('E00');
   end;
-
-  gdb_response('OK');
-*)
 end;
 
 procedure TGdbRspThread.DebugGetMemory(cmd: string);
@@ -416,61 +398,31 @@ var
   addr: dword;
   data: TBytes;
 begin
-(*
-  delete(cmd, 1, 1);
-  len := gdb_fieldSepPos(cmd);
-  s := '$' + copy(cmd, 1, len-1);
-  delete(cmd, 1, len);
+  try
+    delete(cmd, 1, 1);
+    len := gdb_fieldSepPos(cmd);
+    s := '$' + copy(cmd, 1, len-1);
+    delete(cmd, 1, len);
 
-  val(s, addr, err);
-  if err <> 0 then
-    addr := $FFFFFFFF; // invalid address, should be caught below
+    val(s, addr, err);
+    if err <> 0 then
+      addr := $FFFFFFFF; // invalid address, should be caught below
 
-  len := gdb_fieldSepPos(cmd);
-  delete(cmd, len, length(cmd) - len);
-  len := StrToInt('$' + cmd);
+    len := gdb_fieldSepPos(cmd);
+    delete(cmd, len, length(cmd) - len);
+    len := StrToInt('$' + cmd);
 
-  s := '';
-  if dword(addr + len) < $800000 then // flash memory
-  begin
-    if dword(addr + len) < FDebugWire.Device.flashSize then
-      FDebugWire.ReadFlash(addr, len, data)
-    else
-    begin
-      FLog('Error: Flash address exceeds device limit');
-      SetLength(data, len);
-      FillByte(data[0], length(data), 0);
-    end;
-  end
-  else if dword(addr + len) < $810000 then // SRAM
-  begin
-    addr := addr and $FFFF;
-    if addr < 32 + FDebugWire.Device.ioregSize + FDebugWire.Device.sramSize then
-      FDebugWire.ReadAddress(addr and $FFFF, len, data)
-    else
-    begin
-      FLog('Error: Memory address exceeds device limit');
-      SetLength(data, len);
-      FillByte(data[0], length(data), 0);
-    end;
-  end
-  else
-  begin
-    if dword(addr + len) < ($810000 + FDebugWire.Device.eepromSize) then // must be EEPROM then
-      FLog('Error: EEPROM access not supported yet.')
-    else
-      FLog('Error: Address beyond EEPROM.');
+    s := '';
+    setLength(data,len);
+    FMDBGProxy.ReadMemory(addr,len,data);
 
-    SetLength(data, 0);
-    s := 'E00';
-  end;
-
-  if s = '' then
     for i := 0 to high(data) do
       s := s + hexStr(data[i], 2);
 
-  gdb_response(s);
-  *)
+    gdb_response(s);
+  except
+    gdb_response('E00');
+  end;
 end;
 
 procedure TGdbRspThread.DebugSetMemoryHex(cmd: string);
@@ -480,56 +432,31 @@ var
   addr: dword;
   data: TBytes;
 begin
-(*
-  delete(cmd, 1, 1);
-  len := gdb_fieldSepPos(cmd);
-  s := '$' + copy(cmd, 1, len-1);
-  addr := StrToInt(s);
-  delete(cmd, 1, len);
+  try
+    delete(cmd, 1, 1);
+    len := gdb_fieldSepPos(cmd);
+    s := '$' + copy(cmd, 1, len-1);
+    addr := StrToInt(s);
+    delete(cmd, 1, len);
 
-  len := gdb_fieldSepPos(cmd);
-  s := '$' + copy(cmd, 1, len-1);
-  delete(cmd, 1, len);
+    len := gdb_fieldSepPos(cmd);
+    s := '$' + copy(cmd, 1, len-1);
+    delete(cmd, 1, len);
 
-  // now convert data
-  len := length(cmd) div 2;
-  SetLength(data, len);
-  s := '';
-  for i := 0 to len-1 do
-  begin
-    s := '$' + cmd[2*i + 1] + cmd[2*i + 2]; // 1 based index
-    data[i] := StrToInt(s);
-  end;
-
-  if (addr + len) < $800000 then // flash memory
-  begin
-    if (addr + len) < FDebugWire.Device.flashSize then
-      FDebugWire.WriteFlash(addr, data)
-    else
+    // now convert data
+    len := length(cmd) div 2;
+    SetLength(data, len);
+    s := '';
+    for i := 0 to len-1 do
     begin
-      FLog('Error: Flash address exceeds device limit');
-      SetLength(data, 0);
+      s := '$' + cmd[2*i + 1] + cmd[2*i + 2]; // 1 based index
+      data[i] := StrToInt(s);
     end;
-  end
-  else if (addr + len) < $810000 then // SRAM
-  begin
-    addr := addr and $FFFF;
-    if addr < 32 + FDebugWire.Device.ioregSize + FDebugWire.Device.sramSize then
-      FDebugWire.WriteAddress(addr, data)
-    else
-    begin
-      FLog('Error: Memory address exceeds device limit');
-      SetLength(data, 0);
-    end;
-  end
-  else // must be EEPROM then
-  begin
-    FLog('Error: EEPROM access not supported yet.');
-    SetLength(data, 0);
+    FMDBGProxy.WriteMemory(addr,len,data);
+    gdb_response('OK');
+  except
+    gdb_response('E00');
   end;
-
-  gdb_response('OK');
-  *)
 end;
 
 // X addr,len:XX...
@@ -539,86 +466,42 @@ var
   s: string;
   addr: dword;
   data: TBytes;
+  f : file;
 begin
-  (*
-  delete(cmd, 1, 1);
-  len := gdb_fieldSepPos(cmd);
-  s := '$' + copy(cmd, 1, len-1);
-  addr := StrToInt(s);
-  delete(cmd, 1, len);
+  try
+    delete(cmd, 1, 1);
+    len := gdb_fieldSepPos(cmd);
+    s := '$' + copy(cmd, 1, len-1);
+    addr := StrToInt(s);
+    delete(cmd, 1, len);
 
-  len := gdb_fieldSepPos(cmd);
-  s := '$' + copy(cmd, 1, len-1);
-  delete(cmd, 1, len);
-  len := StrToInt(s);
-
-  // now convert data
-  DecodeBinary(cmd, data);
-  if len = length(data) then // ensure decoding yields the expected length data
-  begin
-    if (addr + len) < $800000 then // flash memory
+    len := gdb_fieldSepPos(cmd);
+    s := '$' + copy(cmd, 1, len-1);
+    delete(cmd, 1, len);
+    len := StrToInt(s);
+    if (addr = 0) and (len = 0) then
     begin
-      if (addr + len) < FDebugWire.Device.flashSize then
-        FDebugWire.WriteFlash(addr, data)
+      //Answer with OK to switch to binary mode:
+      gdb_response('OK');
+    end
+    else
+    begin
+      // now convert data
+      DecodeBinary(cmd, data);
+      if len = length(data) then // ensure decoding yields the expected length data
+      begin
+        FMDBGProxy.WriteMemory(addr,len,data);
+        gdb_response('OK');
+      end
       else
       begin
-        FLog('Error: Flash address exceeds device limit');
-        SetLength(data, 0);
-      end;
-    end
-    else if (addr + len) < $810000 then // SRAM
-    begin
-      addr := addr and $FFFF;
-      if addr < 32 + FDebugWire.Device.ioregSize + FDebugWire.Device.sramSize then
-        FDebugWire.WriteAddress(addr, data)
-      else
-      begin
-        FLog('Error: Memory address exceeds device limit');
-        SetLength(data, 0);
-      end;
-    end
-    else // must be EEPROM then
-    begin
-      FLog('Error: EEPROM access not supported yet.');
-      SetLength(data, 0);
+        //FLog('Decoded length <> expected length of binary data.');
+        gdb_response('E02');
+     end;
     end;
-
-    gdb_response('OK');
-  end
-  else
-  begin
-    FLog('Decoded length <> expected length of binary data.');
-    gdb_response('E02');
+  except
+    gdb_response('E00');
   end;
-  *)
-end;
-
-// Supporting  qXfer:memory-map requires support for vFlashErase/vFlashWrite commands
-// to write to flash
-// Support for this disabled at the moment
-{$IFDEF memorymap}
-procedure TGdbRspThread.DebugMemoryMap(cmd: string);
-var
-  i, offset, len: integer;
-  s: string;
-begin
-  (*
-  i := pos('::', cmd);
-  delete(cmd, 1, i+1);
-  i := gdb_fieldSepPos(cmd);
-  s := '$' + copy(cmd, 1, i-1);
-  offset := StrToInt(s);
-  delete(cmd, 1, i);
-  len := StrToInt('$' + cmd);
-
-  // If requested length < memory map size, perpend "m", else "l"
-  if (offset + len) < length(FMemoryMap) then
-    s := 'm' + copy(FMemoryMap, 1+offset, len)
-  else
-    s := 'l' + copy(FMemoryMap, 1+offset, len);
-
-  gdb_response(s);
-  *)
 end;
 
 procedure TGdbRspThread.DecodeBinary(const s: string; out data: TBytes);
@@ -698,82 +581,6 @@ begin
   SetLength(s, j-1);
 end;
 
-// ‘vFlashErase:addr,length’
-// Do nothing for now
-// debugwire automatically erase flash as required when writing
-procedure TGdbRspThread.DebugFlashErase(cmd: string);
-begin
-  gdb_response('OK');
-end;
-
-// ‘vFlashWrite:addr:XX...’
-procedure TGdbRspThread.DebugFlashWrite(cmd: string);
-var
-  i, j: integer;
-  addr: integer;
-  data: TBytes;
-  newbuffer: boolean;
-begin
-  i := gdb_fieldSepPos(cmd);
-  delete(cmd, 1, i);
-  i := gdb_fieldSepPos(cmd);
-  addr := StrToInt('$' + copy(cmd, 1, i-1));
-  delete(cmd, 1, i);
-
-  DecodeBinary(cmd, data);
-
-  newbuffer := true;
-  i := length(FFlashWriteBuffer);
-  if i > 0 then
-  begin
-    j := length(FFlashWriteBuffer[i-1].Data);
-    if (FFlashWriteBuffer[i-1].addr + j) = addr then // contiguous memory, append to this buffer
-    begin
-      SetLength(FFlashWriteBuffer[i-1].Data, j + length(data));
-      Move(data[0], FFlashWriteBuffer[i-1].Data[j], length(data));
-      newbuffer := false;
-    end
-    else
-      newbuffer := true;
-  end;
-
-  if newbuffer then
-  begin
-    SetLength(FFlashWriteBuffer, i+1);
-    FFlashWriteBuffer[i].addr := addr;
-    FFlashWriteBuffer[i].Data := copy(data, 0, length(data));
-  end;
-
-  gdb_response('OK')
-end;
-
-procedure TGdbRspThread.DebugFlashWriteDone;
-var
-  i: integer;
-  isGood: boolean;
-begin
-  (*
-  isGood := true;
-  for i := 0 to high(FFlashWriteBuffer) do
-  begin
-    if FFlashWriteBuffer[i].addr <= FDebugWire.Device.flashSize then
-      FDebugWire.WriteFlash(FFlashWriteBuffer[i].addr, FFlashWriteBuffer[i].data)
-    else
-    begin
-      isGood := false;
-      FLog('unexpected address passed to DebugFlashWrite');
-    end;
-  end;
-
-  if isGood then
-    gdb_response('OK')
-  else
-    gdb_response('E00');
-    *)
-end;
-
-{$ENDIF memorymap}
-
 procedure TGdbRspThread.DebugStopReason(signal: integer;
   stopReason: TDebugStopReason);
 var
@@ -781,59 +588,48 @@ var
   data: TBytes;
   i: integer;
 begin
-  //s := 'T' + hexStr(signal, 2);
-  s := 'S05';
-  (*
-  case stopReason of
-    srHWBP: s := s + 'hwbreak';
-    srSWBP: s := s + 'swbreak';
+  try
+    //s := 'T' + hexStr(signal, 2);
+    s := 'S05';
+    case stopReason of
+      srHWBP: s := s + 'hwbreak';
+      srSWBP: s := s + 'swbreak';
+    end;
+
+    setLength(Data,32);
+    FMDBGProxy.ReadMemory($800000+0,32,data);
+    for i := 0 to 31 do
+      s := s + data[i].ToHexString(2);
+
+    // SREG
+    FMDBGProxy.ReadMemory($800000+$5F,1,data);
+    s := s + data[0].ToHexString(2);
+
+    // SP
+    FMDBGProxy.ReadMemory($800000+$5D,2,data);
+    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+
+    // PC
+    FMDBGProxy.ReadPC(data);
+    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+    // PC in GDB is 32 Bit so fill PC to 32Bits
+    s := s+'0000';
+    gdb_response(s);
+  except
+    gdb_response('E00');
   end;
-
-  // 32 General data
-  FDebugWire.ReadAddress(0, 32, data);
-  for i := 0 to 31 do
-  begin
-    s := s + hexStr(i, 2) + ':' + HexStr(data[i], 2) + ';';
-  end;
-
-  // SREG
-  FDebugWire.ReadAddress($5F, 1, data);
-  s := s + '20:' + hexStr(data[0], 2) + ';';
-
-  // SPL & SPH
-  FDebugWire.ReadAddress($5D, 2, data);
-  s := s + '21:' + hexStr(data[0], 2) + hexStr(data[1], 2) +';';
-
-  // PC in bytes
-  s := s + '22:' + hexStr(FDebugWire.PC and $FF, 2) + hexStr(FDebugWire.PC shr 8, 2) + '0000;';
-  *)
-  gdb_response(s);
 end;
 
 { TGdbRspThread }
 
-constructor TGdbRspThread.Create(AClientStream: TSocketStream); //dw: TDebugWire;
+constructor TGdbRspThread.Create(AClientStream: TSocketStream;var aMDBGProxy : TMDBGProxy);
 //  logger: TLog);
 begin
   inherited Create(false);
   FreeOnTerminate := true;
   FClientStream := AClientStream;
-  //FDebugWire := dw;
+  FMDBGProxy := aMDBGProxy;
   FDebugState := dsPaused;
-  //FLogger := logger;
-  //FBPManager := TBPManager.Create(FDebugWire, logger);
-  //if dw.Device.ID > 0 then
-  //  FMemoryMap := format('<memory-map> <memory type="ram" start="0x800000" length="0x%.4x"/> <memory type="flash" start="0" length="0x%.4x">  <property name="blocksize">0x40</property> </memory></memory-map>',
-  //                [32 + FDebugWire.Device.ioregSize + FDebugWire.Device.sramSize, FDebugWire.Device.flashSize]);
-
-  //FMemoryMap := '<?xml version="1.0"?> '+ LineEnding +
-  //     '<!DOCTYPE memory-map PUBLIC "+//IDN gnu.org//DTD GDB Memory Map V1.0//EN" "http://sourceware.org/gdb/gdb-memory-map.dtd"> '+ LineEnding +
-  //     '<memory-map> '+ LineEnding +
-  //     '  <memory type="ram" start="0x800000" length="0x'+ HexStr(FDebugWire.Device.sramSize, 4) + '"/>'+ LineEnding +
-  //     '  <memory type="flash" start="0x00" length="0x'+ HexStr(FDebugWire.Device.flashSize, 4) +'">'+ LineEnding +
-  //     '    <property name="blocksize">0x'+ HexStr(FDebugWire.Device.FlashPageSize, 4) +'</property>'+ LineEnding +
-  //     '  </memory>'+ LineEnding +
-  //     '</memory-map>';
 end;
 
 function pos_(const c: char; const s: RawByteString): integer;
@@ -853,6 +649,7 @@ end;
 procedure TGdbRspThread.Execute;
 var
   msg, cmd : RawByteString;
+  BreakAddress : LongWord;
   buf: array[0..1023] of char;
   count, i, j, idstart, idend, addr: integer;
   Done: boolean;
@@ -881,12 +678,11 @@ begin
       // If running target, check check for break
       if FDebugState = dsRunning then
       begin
-        //if FDebugWire.TrySync then
-        //begin
-        //  FDebugState := dsPaused;
-        //  FDebugWire.Reconnect;
-        //  DebugStopReason(5, srHWBP);
-        //end
+        if FMDBGProxy.WaitForBreak(BreakAddress) = true then
+        begin
+          FDebugState := dsPaused;
+          DebugStopReason(5, srHWBP);
+        end
       end;
 
       if count > 0 then
@@ -983,25 +779,6 @@ begin
                    DebugStep;
                    DebugStopReason(5, srSWBP);
                  end;
-            {$IFDEF memorymap}
-            'v': begin
-                   if pos('FlashErase', cmd) > 0 then
-                   begin
-                     DebugFlashErase(cmd);
-                   end
-                   else if pos('FlashWrite', cmd) > 0 then
-                   begin
-                     DebugFlashWrite(cmd);
-                   end
-                   else if pos('FlashDone', cmd) > 0 then
-                   begin
-                     DebugFlashWriteDone;
-                   end
-                   else
-                     gdb_response('');
-                 end;
-            {$ENDIF}
-
             'X': begin
                    DebugSetMemoryBinary(cmd);
                  end;
@@ -1033,7 +810,7 @@ begin
                      msg := copy(cmd, 1, idend-1);
 
                      addr := StrToInt('$'+msg);
-                     //FBPManager.AddBP(addr);
+                     FMDBGProxy.SendCommand('break *0x'+addr.ToHexString(8));
                      gdb_response('OK');
                    end
                    else  // other BPs such as watch points not supported
@@ -1077,7 +854,7 @@ begin
   if not FActiveThreadRunning then
   begin
     Log('Incoming connection from ');// + AddrToString(Data.RemoteAddress));
-    FActiveThread := TGdbRspThread.Create(Data);
+    FActiveThread := TGdbRspThread.Create(Data,FMDBGProxy);
     FActiveThread.OnTerminate := @FActiveThreadOnTerminate;
     FActiveThreadRunning := true;
   end
@@ -1102,17 +879,40 @@ begin
   end;
 end;
 
-constructor TGdbRspServer.Create(APort: Word);
+constructor TGdbRspServer.Create(APort: Word; var aMDBGProxy : TMDBGProxy);
 begin
   inherited Create(APort);
   OnConnect := @FAcceptConnection;
   OnConnectQuery := @FQueryConnect;
   FActiveThreadRunning := false;
-
-  //FDebugWire := TDebugWire.Create;
-  //FDebugWire.OnLog := @FLog;
-
-  //SerialConnect;
+  FMDBGProxy := aMDBGProxy;
 end;
 
+(*
+constructor TMdbgNetworkThread.Create(const ServerPort : word);
+begin
+  inherited Create(False);
+  FServerPort := ServerPort;
+  FreeOnTerminate := True;
+  SendDebug('MDB Network Thread Created');
+end;
+
+procedure TMdbgNetworkThread.Execute;
+begin
+  SendDebug('MDB Network Thread Executing');
+  FRspServer := TGdbRspServer.Create(FServerPort);
+  if FRspServer.MaxConnections <> 0 then
+  begin
+    SendDebug('MDB Network Thread before StartAccepting');
+    FRspServer.StartAccepting;
+    SendDebug('MDB Network Thread after StartAccepting');
+  end
+end;
+
+destructor TMdbgNetworkThread.Destroy;
+begin
+  inherited Destroy;
+  SendDebug('MDB Network Thread Destroyed');
+end;
+*)
 end.
