@@ -32,6 +32,7 @@ type
     FMPLabXDir : String;
     FConfigFile : String;
     FTCPPort : word;
+    //FNetworkThread : TGdbRspServer;
     FNetworkThread : TMdbgNetworkThread;
     procedure WriteIni(Section,Key,Value : String);
     function ReadIni(Section,Key,DefaultValue : String):String;
@@ -234,7 +235,6 @@ begin
       Memo1.Lines.Add('Please connect a valid Probe and restart this application');
       FMdbgProxy.Quit;
       Memo1.Lines.Add('MDB Process Terminated');
-
     end;
   end
   else
@@ -258,6 +258,7 @@ begin
   end;
   if Assigned(FNetworkThread) then
   begin
+    //FNetworkThread.StopAccepting(True);
     FNetworkThread.Terminate;
     FreeAndNil(FNetworkThread);
   end;
@@ -268,6 +269,7 @@ var
   SerialNo,Debugger,Chip,_Interface : String;
   ReturnedText : TStringArray;
   line : String;
+  pc : word;
 begin
   Debugger := ComboBox1.Caption;
   SerialNo := ComboBox1.Caption;
@@ -276,16 +278,23 @@ begin
   Chip := ComboBox2.Caption;
   _Interface := ComboBox3.Caption;
   Memo1.Lines.Add('Setting Device: '+Chip);
+  Application.ProcessMessages;
 
   ReturnedText := FMdbgProxy.setDevice(Chip,10000);
   for line in ReturnedText do
     Memo1.Lines.Add(line);
+  Application.ProcessMessages;
 
   if ComboBox3.Enabled then
   begin
     Memo1.Lines.Add('Setting Interface: '+_interface);
     FMdbgProxy.setInterface(_Interface);
+    Application.ProcessMessages;
   end;
+
+  Memo1.Lines.Add('Enabling Software Breakpoints');
+  FMdbgProxy.enableSoftBreakpoints;
+  Application.ProcessMessages;
 
   Memo1.Lines.Add('Activating Debugger: '+Debugger);
   ReturnedText := FMdbgProxy.setHWTool(Debugger,10000);
@@ -300,13 +309,15 @@ begin
       Memo1.Lines.Add('');
     end;
   end;
-
   Memo1.Lines.Add('Resetting CPU');
+  Application.ProcessMessages;
+
   ReturnedText := FMdbgProxy.ResetCPU(15000);
   for line in ReturnedText do
     Memo1.Lines.Add(line);
 
-  if FMdbgProxy.GetPC <> 'null' then
+  Application.ProcessMessages;
+  if FMdbgProxy.ReadPC(pc) = true then
   begin
     WriteIni(SerialNo,'Chip',Chip);
     if ComboBox3.Enabled = true then
@@ -315,23 +326,12 @@ begin
     ComboBox2.Enabled := false;
     ComboBox3.Enabled := false;
     Memo1.Lines.Add('GDBServer waiting for TCP connection on port ' + IntToStr(FTcpPort));
-    FNetworkThread := TMdbgNetworkThread.Create(FTcpPort);
-    FNetworkThread.Start;
+    //FNetworkThread := TGDBRspServer.Create(FTcpPort,FMDBGProxy);
+    //FNetworkThread.SetNonBlocking;
+    //FNetworkThread.StartAccepting;
+    FNetworkThread := TMdbgNetworkThread.Create(FTcpPort,FMDBGProxy);
+    FNetworkThread.Resume;
     Memo1.Lines.Add('After FNetwork Thread execute');
-
-
-    //FRspServer := TGdbRspServer.Create(FTcpPort);
-    //if FRspServer.MaxConnections <> 0 then
-    //begin
-    //  Memo1.Lines.Add('GDBServer waiting for TCP connection on port ' + IntToStr(FRspServer.Port));
-      //FRspServer.SetNonBlocking;
-    //  FRspServer.SetNonBlocking;
-    //  FRspServer.StartAccepting;
-    //end;
-  end
-  else
-  begin
-    Memo1.Lines.Add('ERROR: Could not put Device into Debug mode, please fix settings and retry');
   end;
 end;
 
