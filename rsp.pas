@@ -590,7 +590,7 @@ begin
   try
     //s := 'T' + hexStr(signal, 2);
     s := 'S05';
-    case stopReason of
+{    case stopReason of
       srHWBP: s := s + 'hwbreak';
       srSWBP: s := s + 'swbreak';
     end;
@@ -613,7 +613,7 @@ begin
     s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
     // PC in GDB is 32 Bit so fill PC to 32Bits
     s := s+'0000';
-    gdb_response(s);
+}    gdb_response(s);
   except
     gdb_response('E00');
   end;
@@ -808,7 +808,7 @@ begin
                      idend := gdb_fieldSepPos(cmd);
                      msg := copy(cmd, 1, idend-1);
 
-                     addr := StrToInt('$'+msg);
+                     addr := StrToInt('$'+msg) div 2;
                      FMDBGProxy.SendCommand('break *0x'+addr.ToHexString(8));
                      gdb_response('OK');
                    end
