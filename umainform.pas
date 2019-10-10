@@ -72,8 +72,10 @@ var
 
 begin
   Result := '';
-  {$IFDEF WINDOWS}
+  {$IF DEFINED(WINDOWS)}
   basedir := 'C:\Program Files (x86)\Microchip\MPLABX\';
+  {$ELSEIF DEFINED(LINUX)}
+  basedir := '/opt/microchip/mplabx/';
   {$ELSE}
   basedir := '/Applications/microchip/mplabx/';
   {$ENDIF}
