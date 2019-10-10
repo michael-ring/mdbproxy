@@ -270,7 +270,7 @@ var
 begin
   Result := nil;
   SetLength(Result,0);
-  if HWToolName.contains('mEDBG') then
+  if HWToolName.contains('EDBG') then
     HWToolName := 'EDBG';
   if HWToolName.contains('PICkit 4') then
     HWToolName := 'PICkit4';
