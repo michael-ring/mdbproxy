@@ -32,49 +32,49 @@ object Form1: TForm1
     end
     object ComboBox1: TComboBox
       Left = 80
-      Height = 23
+      Height = 20
       Top = 8
       Width = 328
       AutoComplete = True
       AutoCompleteText = [cbactEnabled, cbactEndOfLineComplete, cbactSearchAscending]
       AutoDropDown = True
-      ItemHeight = 15
+      ItemHeight = 19
       OnChange = ComboBox1Change
       TabOrder = 1
       Text = 'ComboBox1'
     end
     object ComboBox2: TComboBox
       Left = 80
-      Height = 23
+      Height = 20
       Top = 32
       Width = 328
-      ItemHeight = 15
+      ItemHeight = 19
       TabOrder = 2
       Text = 'ComboBox2'
     end
     object ComboBox3: TComboBox
       Left = 80
-      Height = 23
+      Height = 20
       Top = 56
       Width = 80
-      ItemHeight = 15
+      ItemHeight = 19
       TabOrder = 3
       Text = 'ComboBox3'
     end
     object Label1: TLabel
       Left = 8
-      Height = 15
+      Height = 16
       Top = 10
-      Width = 55
+      Width = 64
       Alignment = taRightJustify
       Caption = 'Debugger:'
       ParentColor = False
     end
     object Label2: TLabel
       Left = 40
-      Height = 15
+      Height = 16
       Top = 34
-      Width = 28
+      Width = 32
       Alignment = taRightJustify
       Caption = 'Chip:'
       ParentColor = False
@@ -96,9 +96,9 @@ object Form1: TForm1
   end
   object Label3: TLabel
     Left = 14
-    Height = 15
+    Height = 16
     Top = 58
-    Width = 49
+    Width = 58
     Alignment = taRightJustify
     Caption = 'Interface:'
     ParentColor = False

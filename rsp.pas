@@ -68,17 +68,16 @@ uses
     constructor Create(APort: Word;var aMDBGProxy : TMDBGProxy);
   end;
 
-  (*
   TMdbgNetworkThread = class(TThread)
   private
     FServerPort : word;
     FRspServer : TGdbRspServer;
+    FMDBGProxy : TMDBGProxy;
   public
-    constructor Create(const ServerPort : word);
+    constructor Create(const ServerPort : word;var aMDBGProxy : TMDBGProxy);
     procedure Execute; override;
     destructor Destroy; override;
   end;
-  *)
 
 implementation
 
@@ -888,11 +887,11 @@ begin
   FMDBGProxy := aMDBGProxy;
 end;
 
-(*
-constructor TMdbgNetworkThread.Create(const ServerPort : word);
+constructor TMdbgNetworkThread.Create(const ServerPort : word;var aMDBGProxy : TMDBGProxy);
 begin
   inherited Create(False);
   FServerPort := ServerPort;
+  FMDBGProxy := aMDBGProxy;
   FreeOnTerminate := True;
   SendDebug('MDB Network Thread Created');
 end;
@@ -900,7 +899,7 @@ end;
 procedure TMdbgNetworkThread.Execute;
 begin
   SendDebug('MDB Network Thread Executing');
-  FRspServer := TGdbRspServer.Create(FServerPort);
+  FRspServer := TGdbRspServer.Create(FServerPort,FMDBGProxy);
   if FRspServer.MaxConnections <> 0 then
   begin
     SendDebug('MDB Network Thread before StartAccepting');
@@ -914,5 +913,5 @@ begin
   inherited Destroy;
   SendDebug('MDB Network Thread Destroyed');
 end;
-*)
+
 end.

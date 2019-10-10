@@ -94,6 +94,8 @@ begin
             Log('Detected Firmware upgrade, increasing Timeout');
             TimeOut +=30000;
           end;
+          if Line.contains('Failed to reset') then
+            TimeOut :=-1;
           if line <> '' then
           begin
             SetLength(Result, Length(Result) + 1);
