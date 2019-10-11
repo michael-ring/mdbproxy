@@ -17,6 +17,7 @@ type
     //FMdbgThread: TMdbgThread;
     FMdbgPath: string;
     FmdbServerProcess : TProcess;
+    FmdbGotStop: boolean;
   public
     constructor Create(const MdbgPath: string);
     procedure Log(const LogText: string);
@@ -116,12 +117,19 @@ end;
 function TMdbgProxy.WaitForBreak(out BreakAddress : longWord; Timeout: integer = 1000):boolean;
 var
   Lines : TStringArray;
+  i: integer;
 begin
   Lines := WaitForPrompt(Timeout);
   if length(lines) > 0 then
   begin
-    if Lines[0].Contains('Stop at') then
-      BreakAddress := Lines[1].Replace('address:0x','$').toInteger;
+    for i := 0 to high(Lines) do
+      if Lines[i].Contains('Stop at') then
+        FmdbGotStop := true
+      else if FmdbGotStop and Lines[i].Contains('address:0x') then
+      begin
+        Result := true;
+        BreakAddress := Lines[i].Replace('address:0x','$').toInteger;
+      end;
   end;
 end;
 
@@ -136,6 +144,9 @@ begin
   //if FMdbgThread.MdbServerProcess.Running then
   if FMdbServerProcess.Running then
   begin
+    if Command.Contains('continue') or Command.Contains('step') then
+      FmdbGotStop := false;
+
     for i := 1 to length(Command) do
       FMdbServerProcess.Input.Write(Command[i], 1);
     if Timeout = -1 then
