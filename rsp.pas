@@ -50,7 +50,6 @@ uses
   public
     constructor Create(AClientStream: TSocketStream; var aMDBGProxy : TMDBGProxy);
     procedure Execute; override;
-    //property OnLog: TLog read FLogger write FLogger;
   end;
 
   { TGdbRspServer }
@@ -218,29 +217,38 @@ end;
 procedure TGdbRspThread.DebugGetRegisters;
 var
   data: TBytes;
-  s : string;
+  s, s1 : string;
   i: integer;
+  b: byte;
+  w: word;
 begin
   try
     s := '';
-    setLength(Data,32);
-    FMDBGProxy.ReadMemory($800000+0,32,data);
     for i := 0 to 31 do
-      s := s + data[i].ToHexString(2);
+    begin
+      s1 := 'R'+i.ToString;
+      FMDBGProxy.ReadPrintedValue(s1, b);
+      s := s + b.ToHexString(2);
+    end;
+    s.ToLower;
 
     // SREG
-    FMDBGProxy.ReadMemory($800000+$5F,1,data);
-    s := s + data[0].ToHexString(2);
+    FMDBGProxy.ReadPrintedValue('sreg', b);
+    s := s + b.ToHexString(2);
 
     // SP
-    FMDBGProxy.ReadMemory($800000+$5D,2,data);
-    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+    FMDBGProxy.ReadPrintedValue('spl', b);
+    s := s + b.ToHexString(2);
+    FMDBGProxy.ReadPrintedValue('sph', b);
+    s := s + b.ToHexString(2);
 
     // PC
-    FMDBGProxy.ReadPC(data);
-    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+    FMDBGProxy.ReadPC(w);
+    w := w * 2; // convert PC from word address to byte address
+    s := s +  byte(w).ToHexString(2) + byte(w shr 8).ToHexString(2);
     // PC in GDB is 32 Bit so fill PC to 32Bits
     s := s+'0000';
+
     gdb_response(s.toLower);
   except
     gdb_response('E00');
@@ -253,6 +261,8 @@ var
   s: string;
   i: integer;
   values : TBytes;
+  b: byte;
+  w: word;
 begin
   try
     s := '';
@@ -261,25 +271,28 @@ begin
     delete(cmd, 1, 1);
     if Length(cmd) = 2 then // Hex number of a byte value
     begin
-      regID := StrToInt('$'+cmd)+$800000;
+      regID := StrToInt('$'+cmd);//+$800000;
       case regID of
         0..31: begin // normal registers
-                 FMDBGProxy.ReadMemory(regID,1,values);
-                 s := values[0].ToHexString(2);
+                 FMDBGProxy.ReadPrintedValue('R'+regID.ToString, b);
+                 s := b.ToHexString(2);
                end;
         32:    begin // SREG
-                 FMDBGProxy.ReadMemory($5F,1,values);
-                 s := values[0].ToHexString(2);
+                 FMDBGProxy.ReadPrintedValue('sreg', b);
+                 s := b.ToHexString(2);
                end;
-        33: begin
-               FMDBGProxy.ReadMemory($5D,2,values);
-               s := values[0].ToHexString(2)+values[1].ToHexString(2);
-            end;
+        33:    begin // SP
+                 FMDBGProxy.ReadPrintedValue('spl', b);
+                 s := b.ToHexString(2);
+                 FMDBGProxy.ReadPrintedValue('sph', b);
+                 s := s + b.ToHexString(2);
+               end;
 
-        34: begin // PC
-               FMDBGProxy.ReadPC(values);
-               s := values[0].ToHexString(2)+values[1].ToHexString(2)+'0000';
-            end;
+        34:    begin // PC
+                 FMDBGProxy.ReadPC(w);
+                 w := w * 2;  // word to byte addressing
+                 s := byte(w).ToHexString(2)+byte(w shr 8).ToHexString(2)+'0000';
+               end;
       end;
     end;
     if s <> '' then
@@ -584,36 +597,41 @@ procedure TGdbRspThread.DebugStopReason(signal: integer;
   stopReason: TDebugStopReason);
 var
   s: string;
+  b: byte;
+  w: word;
   data: TBytes;
   i: integer;
 begin
   try
-    //s := 'T' + hexStr(signal, 2);
-    s := 'S05';
-{    case stopReason of
+    s := 'T' + hexStr(signal, 2);
+    case stopReason of
       srHWBP: s := s + 'hwbreak';
       srSWBP: s := s + 'swbreak';
     end;
 
-    setLength(Data,32);
-    FMDBGProxy.ReadMemory($800000+0,32,data);
     for i := 0 to 31 do
-      s := s + data[i].ToHexString(2);
+    begin
+      FMDBGProxy.ReadPrintedValue('R'+i.ToString, b);
+      s := s + i.ToHexString(2) + ':' + b.ToHexString(2) + ';';
+    end;
 
     // SREG
-    FMDBGProxy.ReadMemory($800000+$5F,1,data);
-    s := s + data[0].ToHexString(2);
+    FMDBGProxy.ReadPrintedValue('sreg', b);
+    s := s + '20:' + b.ToHexString(2) + ';';
 
     // SP
-    FMDBGProxy.ReadMemory($800000+$5D,2,data);
-    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+    FMDBGProxy.ReadPrintedValue('spl', b);
+    s := s + '21:' + b.ToHexString(2);
+    FMDBGProxy.ReadPrintedValue('sph', b);
+    s := s + b.ToHexString(2) + ';';
 
     // PC
-    FMDBGProxy.ReadPC(data);
-    s := s + data[0].ToHexString(2) + data[1].ToHexString(2);
+    FMDBGProxy.ReadPC(w);
+    w := w * 2; // convert PC from word address to byte address
+    s := s + '22:' + byte(w).ToHexString(2) + byte(w shr 8).ToHexString(2);
     // PC in GDB is 32 Bit so fill PC to 32Bits
-    s := s+'0000';
-}    gdb_response(s);
+    s := s+'0000;';
+    gdb_response(s);
   except
     gdb_response('E00');
   end;
@@ -622,7 +640,6 @@ end;
 { TGdbRspThread }
 
 constructor TGdbRspThread.Create(AClientStream: TSocketStream;var aMDBGProxy : TMDBGProxy);
-//  logger: TLog);
 begin
   inherited Create(false);
   FreeOnTerminate := true;
@@ -696,9 +713,6 @@ begin
           // ack received command
           FClientStream.WriteByte(ord('+'));
           Log('-> Ctrl+C');
-          //FDebugWire.BreakCmd;
-          //FDebugWire.Reconnect;
-          //FDebugState := dsPaused;
           DebugStopReason(2, srCtrlC); // SIGINT, because the program was interrupted...
         end
         else
@@ -722,8 +736,6 @@ begin
 
             // continue
             'c': begin
-                   //FBPManager.FinalizeBPs;  // check which BPs needs to be removed/written
-                   //FBPManager.PrintBPs;     // debug
                    DebugContinue;
                  end;
 
@@ -736,12 +748,6 @@ begin
                   //FDebugWire.Reset
                 else                  // assume detach leaves system in a runnable state
                   gdb_response('OK');
-
-                //Done: call BP manager to remove HW & SW BPs
-                //FBPManager.DeleteAllBPs;
-                //FBPManager.FinalizeBPs;
-                //FBPManager.PrintBPs;     // debug
-                //FDebugWire.Run;
               end;
 
             // read general registers 32 registers + SREG + PCL + PCH + PCHH
@@ -792,7 +798,6 @@ begin
                      msg := copy(cmd, 1, idend-1);
                      addr := StrToInt('$' + msg);
 
-                     //FBPManager.DeleteBP(addr);
                      gdb_response('OK');
                    end
                    else

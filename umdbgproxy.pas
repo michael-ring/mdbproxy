@@ -17,6 +17,7 @@ type
     //FMdbgThread: TMdbgThread;
     FMdbgPath: string;
     FmdbServerProcess : TProcess;
+    FmdbGotStop: boolean;
   public
     constructor Create(const MdbgPath: string);
     procedure Log(const LogText: string);
@@ -40,6 +41,8 @@ type
     function WriteByte(const addr : longWord; const Value : byte; Timeout: integer = 1000): boolean;
     function WriteWord(const addr : longWord; const Value : word; Timeout: integer = 1000): boolean;
     function WriteLongWord(const addr : longWord; const Value : longWord; Timeout: integer = 1000): boolean;
+
+    function ReadPrintedValue(const ValueName: string; out Value: byte; Timeout: integer = 1000): boolean;
 
     function ReadPC(out Value : TBytes; Timeout: integer = 1000): boolean;
     function ReadPC(out Value : word; Timeout: integer = 1000): boolean;
@@ -116,12 +119,19 @@ end;
 function TMdbgProxy.WaitForBreak(out BreakAddress : longWord; Timeout: integer = 1000):boolean;
 var
   Lines : TStringArray;
+  i: integer;
 begin
   Lines := WaitForPrompt(Timeout);
   if length(lines) > 0 then
   begin
-    if Lines[0].Contains('Stop at') then
-      BreakAddress := Lines[1].Replace('address:0x','$').toInteger;
+    for i := 0 to high(Lines) do
+      if Lines[i].Contains('Stop at') then
+        FmdbGotStop := true
+      else if FmdbGotStop and Lines[i].Contains('address:0x') then
+      begin
+        Result := true;
+        BreakAddress := Lines[i].Replace('address:0x','$').toInteger;
+      end;
   end;
 end;
 
@@ -136,6 +146,9 @@ begin
   //if FMdbgThread.MdbServerProcess.Running then
   if FMdbServerProcess.Running then
   begin
+    if Command.Contains('continue') or Command.Contains('step') then
+      FmdbGotStop := false;
+
     for i := 1 to length(Command) do
       FMdbServerProcess.Input.Write(Command[i], 1);
     if Timeout = -1 then
@@ -368,6 +381,22 @@ end;
 function TMdbgProxy.WriteLongWord(const Addr : longWord; const Value : LongWord; Timeout: integer = 1000): boolean;
 begin
   Result := WriteMemory(Addr,1,[Value and $ff,(Value shr 8) and $ff,(Value shr 16) and $ff,(Value shr 24) and $ff]);
+end;
+
+function TMdbgProxy.ReadPrintedValue(const ValueName : string; out Value : byte; Timeout : integer = 1000): boolean;
+var
+  Lines : TStringArray;
+  tmp : word;
+begin
+  Lines := SendCommand('print '+ValueName);
+  if (length(lines) = 1) then
+  begin
+    tmp := lines[0].subString(pos('=', lines[0]),999).toInteger;
+    Value := tmp and $ff;
+    Result := true;
+  end
+  else
+    Result := false;
 end;
 
 function TMdbgProxy.ReadPC(out Value : TBytes; Timeout: integer = 1000): boolean;
